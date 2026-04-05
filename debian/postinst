@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+restart_pve_stack() {
+  local cmd
+  if command -v deb-systemd-invoke >/dev/null 2>&1; then
+    cmd=(deb-systemd-invoke)
+  else
+    cmd=(systemctl)
+  fi
+  "${cmd[@]}" try-restart pve-cluster.service 2>/dev/null || true
+  "${cmd[@]}" try-restart pvedaemon.service 2>/dev/null || true
+  "${cmd[@]}" try-restart pvestatd.service 2>/dev/null || true
+  "${cmd[@]}" try-restart pveproxy.service 2>/dev/null || true
+  "${cmd[@]}" try-restart pvescheduler.service 2>/dev/null || true
+}
+case "$1" in
+  configure)
+    if [ -d /run/systemd/system ]; then
+      restart_pve_stack
+    fi
+    ;;
+esac

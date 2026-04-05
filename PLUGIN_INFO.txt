@@ -1,0 +1,20 @@
+Proxmox VE — Synology iSCSI storage plugin
+==========================================
+
+Created by
+----------
+Andrew Earnhardt
+Repository: https://github.com/aearnhardt/pve-synology-plugin
+
+What it does
+------------
+This is a Perl custom Proxmox VE storage plugin (type "synology") that talks to Synology DSM over the Web API. 
+It automates iSCSI LUN lifecycle from Proxmox: create, delete, and resize LUNs; map them to an existing 
+iSCSI target; snapshots; clone from snapshot; and raw+size style import/export—so you can use Synology 
+storage from PVE like other shared storage backends.
+
+Version
+-------
+0.925
+
+Thank you for checking out this plugin.

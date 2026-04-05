@@ -1,0 +1,22 @@
+Source: libpve-storage-synology-perl
+Section: perl
+Priority: optional
+Homepage: https://github.com/aearnhardt/pve-synology-plugin
+Maintainer: Proxmox VE Synology Plugin <noreply@example.com>
+Standards-Version: 4.6.0
+Build-Depends: debhelper, devscripts
+
+Package: libpve-storage-synology-perl
+Architecture: all
+Depends: ${perl:Depends}, ${misc:Depends},
+ libpve-storage-perl (>= 8.2.1),
+ multipath-tools,
+ libjson-xs-perl,
+ libwww-perl,
+ libio-socket-ssl-perl,
+ liburi-perl,
+ libdigest-md5-perl
+Description: Synology DSM iSCSI LUN integration for Proxmox VE
+ Custom PVE storage plugin: provisions Synology iSCSI LUNs via DSM Web API
+ (SYNO.Core.ISCSI.*), iSCSI attach, snapshots, clone-from-snapshot, and
+ raw+size import/export.

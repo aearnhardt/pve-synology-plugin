@@ -1,0 +1,10 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: pve-synology-plugin
+Source: https://github.com/aearnhardt/pve-synology-plugin
+License: GPL-2+ or same as parent project
+
+Files: *
+Copyright: 2026, contributors
+License: GPL-2+
+ On Debian systems the full text of the GNU General Public License version 2
+ can be found in `/usr/share/common-licenses/GPL-2'.
