@@ -1161,7 +1161,21 @@ sub filesystem_path {
   die "Error :: No uuid/vpd_unit_sn/lun_id for \"$volname\" (cannot map to /dev).\n"
     if !@$hints && !( defined $lid && "$lid" =~ /^-?[0-9]+$/ );
   my ( $path, $wwid ) = synology_block_path_for_lun( $class, $storeid, $scfg, $lun );
-  return wantarray ? ( "", "", "", "" ) : "" unless length($path);
+  if ( !length($path) ) {
+    # destroy_vm() only calls vdisk_free when PVE::Storage::path() returns a truthy
+    # path. With no local iSCSI session the LUN is not under /dev, so path was "" and
+    # disks stayed on the NAS unless "Destroy unreferenced disks" ran (that path uses
+    # vdisk_list + vdisk_free and skips the path check). In list context report a stub
+    # path so ownership checks pass; vdisk_free still uses DSM API. Scalar callers
+    # (e.g. qemu_blockdev_options) keep "" so -b fails until map_volume has run.
+    if (wantarray) {
+      my $u = $lun->{ uuid } // '';
+      $u =~ s/[^0-9a-fA-F]//g;
+      my $stub = length($u) ? "/run/pve/synology-unmapped/$u" : "/run/pve/synology-unmapped/novaliduuid";
+      return ( $stub, $vmid, $vtype, '' );
+    }
+    return "";
+  }
   $path = synology_untaint_dev_path($path) || $path;
   return wantarray ? ( $path, $vmid, $vtype, $wwid ) : $path;
 }
