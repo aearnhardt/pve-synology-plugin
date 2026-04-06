@@ -1577,8 +1577,8 @@ sub volume_resize {
   die "Error :: volume_resize: \"$volname\" not found.\n" unless $lun;
   my $uuid = $lun->{ uuid } // '';
   die "Error :: volume_resize: no uuid.\n" if $uuid eq '';
+  # PVE::Storage::volume_resize passes $size in bytes (KiB-aligned), not KiB like alloc_image.
   $size = 1024 if $size < 1024;
-  my $new_bytes = $size * 1024;
   synology_entry_request(
     $scfg, $storeid,
     [
@@ -1586,7 +1586,7 @@ sub volume_resize {
       method   => 'set',
       version  => '1',
       uuid     => dsm_string_param($uuid),
-      new_size => "$new_bytes",
+      new_size => "$size",
     ],
   );
   return 1;
