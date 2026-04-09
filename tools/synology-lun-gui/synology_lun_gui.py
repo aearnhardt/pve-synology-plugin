@@ -10,8 +10,7 @@ SYNO.Core.ISCSI.LUN list/get/set/create + map_target, list_snapshot/take_snapsho
 delete_snapshot/revert_snapshot + delete, SYNO.Core.ISCSI.Target list).
 
 Requires PyQt6 (Apple's system Tcl/Tk often does not paint Entry/Label at all on macOS).
-If missing, the script offers to run ``python -m pip install PyQt6`` (TTY), or set
-``SYNOLOGY_LUN_GUI_AUTO_INSTALL_PYQT=1`` for non-interactive installs.
+  pip install PyQt6
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import subprocess
 import sys
 import ssl
 from typing import Optional
@@ -741,60 +739,17 @@ class SynologyClient:
         )
 
 
-def _try_import_pyqt6() -> bool:
+def _require_qt():
     try:
         from PyQt6.QtCore import QThread, pyqtSignal  # noqa: F401
         from PyQt6.QtWidgets import QApplication  # noqa: F401
     except ImportError:
-        return False
-    return True
-
-
-def _pip_install_pyqt6() -> bool:
-    try:
-        r = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "PyQt6"],
-            check=False,
-        )
-        return r.returncode == 0
-    except OSError:
-        return False
-
-
-def _require_qt() -> None:
-    if _try_import_pyqt6():
-        return
-
-    hint = (
-        "This GUI needs PyQt6 (macOS system Tk often cannot draw text fields).\n"
-        "Install manually with:\n"
-        f"  {sys.executable} -m pip install PyQt6\n"
-    )
-    offer = False
-    if sys.stdin.isatty() and sys.stdout.isatty():
-        try:
-            ans = input(
-                "PyQt6 is not installed. Install it now with pip? [y/N] "
-            ).strip().lower()
-        except EOFError:
-            ans = ""
-        offer = ans in ("y", "yes")
-    else:
-        flag = os.environ.get("SYNOLOGY_LUN_GUI_AUTO_INSTALL_PYQT", "").strip().lower()
-        offer = flag in ("1", "y", "yes", "true")
-
-    if offer:
-        print("Installing PyQt6...", file=sys.stderr)
-        if _pip_install_pyqt6() and _try_import_pyqt6():
-            return
         print(
-            "Could not install or import PyQt6. "
-            "Use the same Python interpreter for pip and this script, then retry.",
+            "This GUI needs PyQt6 (macOS system Tk often cannot draw text fields).\n"
+            "  pip install PyQt6",
             file=sys.stderr,
         )
-
-    print(hint, file=sys.stderr)
-    sys.exit(1)
+        sys.exit(1)
 
 
 def main() -> None:

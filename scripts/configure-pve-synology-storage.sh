@@ -204,7 +204,7 @@ cmd+=(--auto_iscsi_discovery "$auto_iscsi")
 [[ -n "${iscsi_port}" ]] && cmd+=(--iscsi_port "$iscsi_port")
 [[ -n "${dsm_session}" ]] && cmd+=(--dsm_session "$dsm_session")
 [[ -n "${max_iscsi}" ]] && cmd+=(--max_iscsi_sessions "$max_iscsi")
-[[ -n "${debug_lvl}" ]] && cmd+=(--synology-debug "$debug_lvl")
+[[ -n "${debug_lvl}" ]] && cmd+=(--debug "$debug_lvl")
 
 echo
 echo "Command to run (password shown as ***):"

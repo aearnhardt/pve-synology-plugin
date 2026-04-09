@@ -29,16 +29,14 @@ my $DEBUG = $ENV{ SYNOLOGY_DEBUG } // 0;
 
 sub get_debug_level {
   my ($scfg) = @_;
-  # Named synology_debug (not "debug") — Proxmox merges property names across all storage
-  # plugins; TrueNAS and others use "debug", which would duplicate and break pvedaemon/pveproxy.
-  return $scfg->{ synology_debug } if ref($scfg) eq 'HASH' && defined $scfg->{ synology_debug };
+  return $scfg->{ debug } if ref($scfg) eq 'HASH' && defined $scfg->{ debug };
   return $DEBUG;
 }
 
 sub set_debug_from_config {
   my ($scfg) = @_;
-  if ( ref($scfg) eq 'HASH' && defined $scfg->{ synology_debug } ) {
-    $DEBUG = $scfg->{ synology_debug };
+  if ( ref($scfg) eq 'HASH' && defined $scfg->{ debug } ) {
+    $DEBUG = $scfg->{ debug };
   }
 }
 
@@ -134,8 +132,8 @@ sub properties {
       type        => 'integer',
       default     => 32,
     },
-    synology_debug => {
-      description => 'Synology plugin log verbosity 0–3 (not named "debug": that key is reserved across all PVE storage plugins).',
+    debug => {
+      description => 'Debug verbosity 0–3.',
       type        => 'integer',
       minimum     => 0,
       maximum     => 3,
@@ -166,7 +164,7 @@ sub options {
     auto_iscsi_discovery   => { optional => 1 },
     dsm_session            => { optional => 1 },
     max_iscsi_sessions     => { optional => 1 },
-    synology_debug         => { optional => 1 },
+    debug                  => { optional => 1 },
     storeid                => { optional => 1 },
     nodes                  => { optional => 1 },
     disable                => { optional => 1 },
