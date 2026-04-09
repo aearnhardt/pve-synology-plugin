@@ -17,47 +17,19 @@ Derived from the same Proxmox integration patterns as [pve-nimble-plugin](https:
 
 ## Install
 
-**Unified installer (recommended):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aearnhardt/pve-synology-plugin/main/install.sh -o /tmp/install.sh
-sudo bash /tmp/install.sh
-```
-
-The unified installer can:
-
-- Install the plugin file to `/usr/share/perl5/PVE/Storage/Custom/SynologyStoragePlugin.pm`
-- Restart the needed Proxmox services (`pve-cluster`, `pvedaemon`, `pvestatd`, `pveproxy`, `pvescheduler`)
-- Launch interactive storage setup (`pvesm add synology ...`)
-- Show status and uninstall from its interactive menu
-
-When run from a local clone, `install.sh` prefers a local `./SynologyStoragePlugin.pm` first. If that file is not present (or if `--plugin-url` is set), it fetches from GitHub.
-
-Useful flags:
-
-- `--menu` / `--no-menu`
-- `--configure` / `--no-configure`
-- `--repo-base <url>` / `--plugin-url <url>` / `--dest <path>`
-- `--yes` (non-interactive confirmations)
-
-**Legacy direct installer:** you can still run:
+**Package / APT (recommended when you publish releases or an APT repo):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aearnhardt/pve-synology-plugin/main/scripts/install-pve-synology-plugin.sh | sudo bash
 ```
 
-**Manual:** copy `SynologyStoragePlugin.pm` to `/usr/share/perl5/PVE/Storage/Custom/` on each node, or build and install the Debian package **`libpve-storage-synology-perl`** from `debian/`, then restart `pvedaemon`, `pvestatd`, `pveproxy`.
+**Manual:** copy `SynologyStoragePlugin.pm` to `/usr/share/perl5/PVE/Storage/Custom/` on each node, or build and install the Debian package **`libpve-storage-synology-perl`** from `debian/` (see **Build Debian package** below), then restart `pvedaemon`, `pvestatd`, `pveproxy`.
 
 ## Configure storage
 
 ### Interactive setup
 
-On each Proxmox node (as **root**), after the plugin is installed, you can run either helper:
-
-- `install.sh` (main menu option: **Configure Synology storage**)
-- `scripts/configure-pve-synology-storage.sh` (direct configure flow)
-
-Both prompt for required values and optional advanced settings, show a redacted preview of the `pvesm` command, then run `pvesm add` if you confirm.
+On each Proxmox node (as **root**), after the plugin is installed, you can run the helper script. It prompts for required values and optional advanced settings, shows a redacted preview of the `pvesm` command, then runs `pvesm add` if you confirm.
 
 From GitHub (replace `main` if you use another branch):
 
