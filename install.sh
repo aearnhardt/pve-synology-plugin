@@ -282,9 +282,9 @@ configure_storage() {
   lun_location=$(trim "${REPLY:-}")
   [[ -z "$lun_location" ]] && lun_location="/volume1"
 
-  read_tty -p "Proxmox content types [images]: " REPLY
+  read_tty -p "Proxmox content types [images,rootdir]: " REPLY
   content=$(trim "${REPLY:-}")
-  [[ -z "$content" ]] && content="images"
+  [[ -z "$content" ]] && content="images,rootdir"
 
   use_https=yes
   check_ssl=no
@@ -334,20 +334,20 @@ configure_storage() {
   cmd+=(--address "$address")
   cmd+=(--username "$username")
   cmd+=(--password "$password")
-  cmd+=(--target_name "$target_name")
-  cmd+=(--lun_location "$lun_location")
+  cmd+=(--target-name "$target_name")
+  cmd+=(--lun-location "$lun_location")
   cmd+=(--content "$content")
-  cmd+=(--use_https "$use_https")
-  cmd+=(--check_ssl "$check_ssl")
-  cmd+=(--auto_iscsi_discovery "$auto_iscsi")
+  cmd+=(--use-https "$use_https")
+  cmd+=(--check-ssl "$check_ssl")
+  cmd+=(--auto-iscsi-discovery "$auto_iscsi")
 
-  [[ -n "$dsm_port" ]] && cmd+=(--dsm_port "$dsm_port")
-  [[ -n "$lun_type" ]] && cmd+=(--lun_type "$lun_type")
+  [[ -n "$dsm_port" ]] && cmd+=(--dsm-port "$dsm_port")
+  [[ -n "$lun_type" ]] && cmd+=(--lun-type "$lun_type")
   [[ -n "$vnprefix" ]] && cmd+=(--vnprefix "$vnprefix")
-  [[ -n "$iscsi_discovery_ips" ]] && cmd+=(--iscsi_discovery_ips "$iscsi_discovery_ips")
-  [[ -n "$iscsi_port" ]] && cmd+=(--iscsi_port "$iscsi_port")
-  [[ -n "$dsm_session" ]] && cmd+=(--dsm_session "$dsm_session")
-  [[ -n "$max_iscsi" ]] && cmd+=(--max_iscsi_sessions "$max_iscsi")
+  [[ -n "$iscsi_discovery_ips" ]] && cmd+=(--iscsi-discovery-ips "$iscsi_discovery_ips")
+  [[ -n "$iscsi_port" ]] && cmd+=(--iscsi-port "$iscsi_port")
+  [[ -n "$dsm_session" ]] && cmd+=(--dsm-session "$dsm_session")
+  [[ -n "$max_iscsi" ]] && cmd+=(--max-iscsi-sessions "$max_iscsi")
   [[ -n "$debug_lvl" ]] && cmd+=(--synology-debug "$debug_lvl")
 
   echo

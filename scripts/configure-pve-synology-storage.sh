@@ -125,7 +125,7 @@ prompt_line "LUN location on the NAS (where DSM stores LUNs):" "/volume1"
 lun_location=$REPLY
 [[ -n "${lun_location}" ]] || die "LUN location is required"
 
-prompt_line "Proxmox content types (comma-separated, usually images):" "images"
+prompt_line "Proxmox content types (comma-separated, use images,rootdir for VMs + LXC):" "images,rootdir"
 content=$REPLY
 [[ -n "${content}" ]] || die "content is required"
 
@@ -190,20 +190,20 @@ cmd=(pvesm add synology "$storage_id")
 cmd+=(--address "$address")
 cmd+=(--username "$username")
 cmd+=(--password "$password")
-cmd+=(--target_name "$target_name")
-cmd+=(--lun_location "$lun_location")
+cmd+=(--target-name "$target_name")
+cmd+=(--lun-location "$lun_location")
 cmd+=(--content "$content")
-cmd+=(--use_https "$use_https")
-cmd+=(--check_ssl "$check_ssl")
-cmd+=(--auto_iscsi_discovery "$auto_iscsi")
+cmd+=(--use-https "$use_https")
+cmd+=(--check-ssl "$check_ssl")
+cmd+=(--auto-iscsi-discovery "$auto_iscsi")
 
-[[ -n "${dsm_port}" ]] && cmd+=(--dsm_port "$dsm_port")
-[[ -n "${lun_type}" ]] && cmd+=(--lun_type "$lun_type")
+[[ -n "${dsm_port}" ]] && cmd+=(--dsm-port "$dsm_port")
+[[ -n "${lun_type}" ]] && cmd+=(--lun-type "$lun_type")
 [[ -n "${vnprefix}" ]] && cmd+=(--vnprefix "$vnprefix")
-[[ -n "${iscsi_discovery_ips}" ]] && cmd+=(--iscsi_discovery_ips "$iscsi_discovery_ips")
-[[ -n "${iscsi_port}" ]] && cmd+=(--iscsi_port "$iscsi_port")
-[[ -n "${dsm_session}" ]] && cmd+=(--dsm_session "$dsm_session")
-[[ -n "${max_iscsi}" ]] && cmd+=(--max_iscsi_sessions "$max_iscsi")
+[[ -n "${iscsi_discovery_ips}" ]] && cmd+=(--iscsi-discovery-ips "$iscsi_discovery_ips")
+[[ -n "${iscsi_port}" ]] && cmd+=(--iscsi-port "$iscsi_port")
+[[ -n "${dsm_session}" ]] && cmd+=(--dsm-session "$dsm_session")
+[[ -n "${max_iscsi}" ]] && cmd+=(--max-iscsi-sessions "$max_iscsi")
 [[ -n "${debug_lvl}" ]] && cmd+=(--synology-debug "$debug_lvl")
 
 echo
