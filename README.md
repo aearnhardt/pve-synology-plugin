@@ -83,9 +83,15 @@ pvesm add synology <storage-id> \
   --address <nas-hostname-or-ip> \
   --username <dsm-user> \
   --password <dsm-password> \
-  --target_name "<exact target name in DSM>" \
-  --lun_location /volume1 \
-  --content images
+  --target-name "<exact target name in DSM>" \
+  --lun-location /volume1 \
+  --content images,rootdir
+```
+
+Use `--content images` only if you do not want LXC container roots on this storage. For pools that already exist with `images` only, enable CT roots without re-adding storage:
+
+```bash
+pvesm set <storage-id> --content images,rootdir
 ```
 
 Useful options:
@@ -104,8 +110,10 @@ Useful options:
 - **DSM and model differences**: API behaviour and required `lun_type` / `lun_location` vary by DSM version and NAS series; validate on your unit.
 - **LUN size units**: Create/resize send size in **bytes** to DSM (aligned with typical CSI usage). If your firmware expects different units, adjust `alloc_image` / `volume_resize` accordingly.
 - **Snapshot rollback** uses DSM method `revert_snapshot`; confirm it exists on your DSM (otherwise rollback tasks will fail with a DSM error code).
+- **Snapshots vs `lun_type`**: DSM LUN snapshots only apply to thin/snapshot-capable modes (e.g. `ADV`, `THIN`, `BLUN`, not thick `FILE`/`BLOCK`/`BLUN_THICK`). The plugin reflects that in `volume_has_feature`; choosing a thick type will hide snapshot/clone-from-snap in the UI where PVE honours it.
 - **Disk matching** uses the LUN **UUID** (hex, no hyphens) to find `/dev/disk/by-id` entries; exotic setups may need extra heuristics.
-- **Volume rename** is not implemented (`rename_volume` dies).
+- **Volume rename** is not implemented (`rename_volume` dies). That blocks **in-place** disk rename on this storage (some QEMU and **pct** rename paths). **Cross-storage** moves that use export/import are unaffected.
+- **Clusters**: Install the plugin on **every** node. iSCSI sessions and `map_volume` are **per-node**; shared storage depends on correct multipath/target limits (`max_iscsi_sessions`).
 
 ## Optional: DSM GUI helper
 

@@ -64,7 +64,9 @@ sub type {
 
 sub plugindata {
   return {
-    content => [ { images => 1, none => 1 }, { images => 1 } ],
+    # rootdir: LXC CT root on raw LUN (same vm-<id>-disk-* naming as QEMU images; cf. Nimble plugin).
+    # vztmpl (CT templates) omitted: this backend is raw block only, not file/snippet storage.
+    content => [ { images => 1, rootdir => 1, none => 1 }, { images => 1, rootdir => 1 } ],
     format  => [ { raw => 1 }, 'raw' ],
     # Do NOT set 'sensitive-properties' => {} — in PVE::Storage::Plugin::sensitive_properties() an empty
     # hash is truthy, so the API returns no sensitive keys and omits password from the default list.
@@ -575,6 +577,13 @@ sub synology_lun_create_dev_attribs {
   );
   return '[]' if !$lun_type || !$snap_ok{$lun_type};
   return encode_json( [ { dev_attrib => 'can_snapshot', enable => 1 } ] );
+}
+
+# Single source of truth with synology_lun_create_dev_attribs (DSM snapshot-capable LUN modes).
+sub synology_lun_type_supports_snapshots {
+  my ($lun_type) = @_;
+  return 0 if synology_lun_create_dev_attribs($lun_type) eq '[]';
+  return 1;
 }
 
 sub synology_api_target_list {
@@ -1145,6 +1154,9 @@ sub synology_snapshot_dsm_name {
 
 sub parse_volname {
   my ( $class, $volname ) = @_;
+  # Raw block plugins return vtype "images" for all vm-VMID-disk-* names, including LXC CT roots.
+  # CT eligibility is declared via plugindata content rootdir, not via parse_volname's vtype
+  # (same pattern as PVE LVM / RBD).
   if ( $volname =~ m/^(vm|base)-(\d+)-(\S+)$/ ) {
     my $vtype = ( $1 eq 'vm' ) ? 'images' : 'base';
     return ( $vtype, $3, $2, undef, undef, undef, 'raw' );
@@ -1170,6 +1182,8 @@ sub filesystem_path {
     # vdisk_list + vdisk_free and skips the path check). In list context report a stub
     # path so ownership checks pass; vdisk_free still uses DSM API. Scalar callers
     # (e.g. qemu_blockdev_options) keep "" so -b fails until map_volume has run.
+    # The stub is not a real mount/device; CT/QEMU destroy paths that stat the path
+    # see nothing on disk — free_image still removes the LUN via DSM.
     if (wantarray) {
       my $u = $lun->{ uuid } // '';
       $u =~ s/[^0-9a-fA-F]//g;
@@ -1206,10 +1220,11 @@ sub synology_list_volume_entries {
     next unless $volname =~ /^vm-(\d+)-(disk-|cloudinit|state-)/;
     push @rows,
       {
-      volid => "$storeid:$volname",
-      name  => $volname,
-      vmid  => $1,
-      size  => $lun->{ size } // 0,
+      volid   => "$storeid:$volname",
+      name    => $volname,
+      vmid    => $1,
+      size    => $lun->{ size } // 0,
+      content => 'images',
       };
   }
   return \@rows;
@@ -1218,6 +1233,8 @@ sub synology_list_volume_entries {
 sub alloc_image {
   my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
   die "Error :: Unsupported format ($fmt).\n" if $fmt ne 'raw';
+  # PVE 8.x usually passes undef for CT rootfs names and uses get_next_vm_diskname (vm-VMID-disk-N).
+  # Explicit names must stay in this set; other patterns would require plugin + PVE alignment.
   if ( defined $name ) {
     die "Error :: Illegal name \"$name\".\n" if $name !~ m/^vm-$vmid-(disk-|cloudinit|state-)/;
   }
@@ -1610,7 +1627,8 @@ sub volume_resize {
 
 sub rename_volume {
   my ( $class, $scfg, $storeid, $source_volname, $target_vmid, $target_volname ) = @_;
-  die "Error :: rename_volume is not implemented for Synology in this plugin.\n";
+  die "Error :: rename_volume is not implemented for Synology in this plugin "
+    . "(in-place disk rename / some pct workflows). Cross-storage moves using export/import still work.\n";
 }
 
 sub synology_list_snapshots {
@@ -1808,10 +1826,12 @@ sub clone_image {
 
 sub volume_has_feature {
   my ( $class, $scfg, $feature, $storeid, $volname, $snapname, $running ) = @_;
+  my $lt = $scfg->{ lun_type } // 'ADV';
+  my $snap_ok = synology_lun_type_supports_snapshots($lt);
   my $features = {
-    copy       => { current => 1, snap => 1 },
-    clone      => { current => 1, snap => 1 },
-    snapshot   => { current => 1 },
+    copy       => { current => 1, snap => $snap_ok },
+    clone      => { current => 1, snap => $snap_ok },
+    snapshot   => { current => $snap_ok },
     sparseinit => { current => 1 },
     rename     => { current => 0 },
   };

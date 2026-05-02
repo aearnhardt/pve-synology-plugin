@@ -13,6 +13,10 @@ It automates iSCSI LUN lifecycle from Proxmox: create, delete, and resize LUNs; 
 iSCSI target; snapshots; clone from snapshot; and raw+size style import/export—so you can use Synology 
 storage from PVE like other shared storage backends.
 
+LXC (rootdir): enabled via storage content images,rootdir; CT roots use the same vm-<id>-disk-* raw names 
+as QEMU. alloc_image only accepts vm-<id>-disk-|cloudinit|state-* explicit names (PVE normally auto-generates 
+disk-N). rename_volume is not implemented—in-place rename fails; cross-storage export/import still works.
+
 Version
 -------
 1.0.2
