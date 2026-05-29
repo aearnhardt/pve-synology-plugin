@@ -44,7 +44,7 @@ sub set_debug_from_config {
 
 ### PVE API version (match Nimble plugin pattern)
 sub api {
-  my $tested_apiver = 13;
+  my $tested_apiver = 14;
   my $apiver        = eval { PVE::Storage::APIVER() };
   my $apiage        = eval { PVE::Storage::APIAGE() };
   $apiver = $tested_apiver if !defined($apiver) || $apiver !~ /^\d+$/;
@@ -1605,7 +1605,10 @@ sub deactivate_volume {
 }
 
 sub volume_resize {
-  my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
+  my ( $class, $scfg, $storeid, $volname, $size, $running, $snapname ) = @_;
+  if ( defined($snapname) && length($snapname) ) {
+    die "Error :: Resizing a snapshot is not supported on Synology storage (no snapshot-as-volume-chain).\n";
+  }
   my $lun = $class->synology_find_lun_by_volname( $scfg, $volname, $storeid );
   die "Error :: volume_resize: \"$volname\" not found.\n" unless $lun;
   my $uuid = $lun->{ uuid } // '';
@@ -1764,6 +1767,17 @@ sub volume_rollback_is_possible {
   return 1;
 }
 
+# DSM list_snapshot total_size is bytes (Synology CSI SnapshotInfo).
+sub synology_snapshot_virtual_size_bytes {
+  my ($snap) = @_;
+  return undef unless ref($snap) eq 'HASH';
+  my $sz = $snap->{total_size};
+  return undef if !defined($sz) || $sz eq '';
+  $sz = 0 + $sz;
+  return undef if $sz <= 0;
+  return int($sz);
+}
+
 sub volume_snapshot_info {
   my ( $class, $scfg, $storeid, $volname ) = @_;
   my $lun = $class->synology_find_lun_by_volname( $scfg, $volname, $storeid );
@@ -1776,7 +1790,10 @@ sub volume_snapshot_info {
     my $desc = $s->{ description } // '';
     next unless $desc =~ /^PVE snapshot (.+)/;
     my $pve_name = $1;
-    $info{ $pve_name } = { id => $s->{ uuid }, timestamp => ( $s->{ create_time } // 0 ) };
+    my $entry = { id => $s->{ uuid }, timestamp => ( $s->{ create_time } // 0 ) };
+    my $virtual_size = synology_snapshot_virtual_size_bytes($s);
+    $entry->{'virtual-size'} = $virtual_size if defined $virtual_size;
+    $info{ $pve_name } = $entry;
   }
   return \%info;
 }
