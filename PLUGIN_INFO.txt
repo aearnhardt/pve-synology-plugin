@@ -19,6 +19,6 @@ disk-N). rename_volume is not implemented—in-place rename fails; cross-storage
 
 Version
 -------
-1.0.2
+1.0.5
 
 Thank you for checking out this plugin.

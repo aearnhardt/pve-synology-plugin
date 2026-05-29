@@ -1,3 +1,10 @@
+libpve-storage-synology-perl (1.0.5-1) stable; urgency=medium
+
+  * Advertise PVE storage API version 15 to silence journalctl warnings on
+    current Proxmox VE releases.
+
+ -- Andrew Earnhardt <135634770+aearnhardt@users.noreply.github.com>  Fri, 29 May 2026 14:30:00 -0400
+
 libpve-storage-synology-perl (0.1.0-1) unstable; urgency=medium
 
   * Initial Synology DSM iSCSI storage plugin for Proxmox VE.
