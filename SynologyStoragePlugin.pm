@@ -44,7 +44,7 @@ sub set_debug_from_config {
 
 ### PVE API version (match Nimble plugin pattern)
 sub api {
-  my $tested_apiver = 14;
+  my $tested_apiver = 15;
   my $apiver        = eval { PVE::Storage::APIVER() };
   my $apiage        = eval { PVE::Storage::APIAGE() };
   $apiver = $tested_apiver if !defined($apiver) || $apiver !~ /^\d+$/;
