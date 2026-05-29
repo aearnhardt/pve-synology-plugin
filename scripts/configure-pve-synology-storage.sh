@@ -86,6 +86,19 @@ command -v pvesm >/dev/null 2>&1 || die "pvesm not found — run this on a Proxm
 readonly SYNOLOGY_PLUGIN_PM="/usr/share/perl5/PVE/Storage/Custom/SynologyStoragePlugin.pm"
 [[ -f "${SYNOLOGY_PLUGIN_PM}" ]] || die "Synology plugin not installed (missing ${SYNOLOGY_PLUGIN_PM}). Install SynologyStoragePlugin.pm, then restart pvedaemon, pvestatd, and pveproxy (see README Install). Without it, pvesm cannot add type 'synology' and storage.cfg will not change."
 
+synology_plugin_registered() {
+  perl -e '
+    use PVE::Storage ();
+    use PVE::Storage::Plugin ();
+    my @types = PVE::Storage::Plugin->lookup_types();
+    exit(grep { $_ eq "synology" } @types ? 0 : 1);
+  ' 2>/dev/null
+}
+
+if ! synology_plugin_registered; then
+  die "storage type 'synology' is not registered (plugin file exists but did not load). Check: journalctl -b | grep -iE 'SynologyStoragePlugin|storage plugin' — then: systemctl restart pvedaemon pvestatd pveproxy — and re-run install.sh option 1 before configuring."
+fi
+
 echo "Proxmox Synology storage — interactive configuration"
 echo "A pre-created iSCSI target on DSM must exist; its name must match what you enter below."
 echo
@@ -190,21 +203,22 @@ cmd=(pvesm add synology "$storage_id")
 cmd+=(--address "$address")
 cmd+=(--username "$username")
 cmd+=(--password "$password")
-cmd+=(--target-name "$target_name")
-cmd+=(--lun-location "$lun_location")
+# pvesm uses underscores in flag names (storage.cfg keys), not hyphens
+cmd+=(--target_name "$target_name")
+cmd+=(--lun_location "$lun_location")
 cmd+=(--content "$content")
-cmd+=(--use-https "$use_https")
-cmd+=(--check-ssl "$check_ssl")
-cmd+=(--auto-iscsi-discovery "$auto_iscsi")
+cmd+=(--use_https "$use_https")
+cmd+=(--check_ssl "$check_ssl")
+cmd+=(--auto_iscsi_discovery "$auto_iscsi")
 
-[[ -n "${dsm_port}" ]] && cmd+=(--dsm-port "$dsm_port")
-[[ -n "${lun_type}" ]] && cmd+=(--lun-type "$lun_type")
+[[ -n "${dsm_port}" ]] && cmd+=(--dsm_port "$dsm_port")
+[[ -n "${lun_type}" ]] && cmd+=(--lun_type "$lun_type")
 [[ -n "${vnprefix}" ]] && cmd+=(--vnprefix "$vnprefix")
-[[ -n "${iscsi_discovery_ips}" ]] && cmd+=(--iscsi-discovery-ips "$iscsi_discovery_ips")
-[[ -n "${iscsi_port}" ]] && cmd+=(--iscsi-port "$iscsi_port")
-[[ -n "${dsm_session}" ]] && cmd+=(--dsm-session "$dsm_session")
-[[ -n "${max_iscsi}" ]] && cmd+=(--max-iscsi-sessions "$max_iscsi")
-[[ -n "${debug_lvl}" ]] && cmd+=(--synology-debug "$debug_lvl")
+[[ -n "${iscsi_discovery_ips}" ]] && cmd+=(--iscsi_discovery_ips "$iscsi_discovery_ips")
+[[ -n "${iscsi_port}" ]] && cmd+=(--iscsi_port "$iscsi_port")
+[[ -n "${dsm_session}" ]] && cmd+=(--dsm_session "$dsm_session")
+[[ -n "${max_iscsi}" ]] && cmd+=(--max_iscsi_sessions "$max_iscsi")
+[[ -n "${debug_lvl}" ]] && cmd+=(--synology_debug "$debug_lvl")
 
 echo
 echo "Command to run (password shown as ***):"
@@ -236,7 +250,10 @@ set +e
 pvesm_rc=$?
 set -e
 if [[ $pvesm_rc -ne 0 ]]; then
-  die "pvesm add failed (exit $pvesm_rc). If the error mentions an unknown storage type, install $SYNOLOGY_PLUGIN_PM and restart pvedaemon/pvestatd/pveproxy, then try again."
+  if ! synology_plugin_registered; then
+    die "pvesm add failed (exit $pvesm_rc). If you see 'Unknown option' for flags like --target-name, use underscores instead (--target_name); pvesm does not accept hyphenated plugin option names."
+  fi
+  die "pvesm add failed (exit $pvesm_rc). Check journalctl and DSM connectivity, then try again."
 fi
 
 if [[ ! -r /etc/pve/storage.cfg ]] || ! grep -Fx "synology: $storage_id" /etc/pve/storage.cfg >/dev/null 2>&1; then

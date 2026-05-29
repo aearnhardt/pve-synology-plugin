@@ -83,10 +83,12 @@ pvesm add synology <storage-id> \
   --address <nas-hostname-or-ip> \
   --username <dsm-user> \
   --password <dsm-password> \
-  --target-name "<exact target name in DSM>" \
-  --lun-location /volume1 \
+  --target_name "<exact target name in DSM>" \
+  --lun_location /volume1 \
   --content images,rootdir
 ```
+
+`pvesm` CLI flags use **underscores** (same as `storage.cfg` keys), not hyphens — e.g. `--target_name`, not `--target-name`.
 
 Use `--content images` only if you do not want LXC container roots on this storage. For pools that already exist with `images` only, enable CT roots without re-adding storage:
 
