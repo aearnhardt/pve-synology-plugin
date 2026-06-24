@@ -7,6 +7,8 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="${0##*/}"
 readonly SYNOLOGY_PLUGIN_PM="/usr/share/perl5/PVE/Storage/Custom/SynologyStoragePlugin.pm"
+readonly BACKUP_DIR="/var/lib/synology-plugin-backups"
+readonly STORAGE_CFG="/etc/pve/storage.cfg"
 
 die() {
   echo "$SCRIPT_NAME: $*" >&2
@@ -126,6 +128,200 @@ ensure_plugin_registered() {
   return 1
 }
 
+get_installed_version() {
+  local dest=$1
+  if [[ ! -f "$dest" ]]; then
+    echo "unknown"
+    return 0
+  fi
+  grep -E 'our \$VERSION' "$dest" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown"
+}
+
+backup_plugin() {
+  local dest=$1
+  if [[ ! -f "$dest" ]]; then
+    return 0
+  fi
+  mkdir -p "$BACKUP_DIR"
+  local ts version backup_file
+  ts=$(date '+%Y%m%d_%H%M%S')
+  version=$(get_installed_version "$dest")
+  backup_file="${BACKUP_DIR}/SynologyStoragePlugin.pm.backup.${version}.${ts}"
+  cp "$dest" "$backup_file" || die "failed to create plugin backup at $backup_file"
+  info "Backup created: $backup_file"
+}
+
+validate_plugin() {
+  local plugin_file=$1
+  info "Validating plugin syntax..."
+  if perl -c "$plugin_file" >/dev/null 2>&1; then
+    info "Plugin syntax OK"
+    return 0
+  fi
+  perl -c "$plugin_file" 2>&1 | head -15 >&2
+  die "plugin syntax validation failed"
+}
+
+get_storage_config_value() {
+  local storage_name=$1
+  local param_name=$2
+  local config_block
+  [[ -f "$STORAGE_CFG" ]] || return 1
+  config_block=$(awk "/^synology: ${storage_name}\$/{flag=1; next} /^[a-zA-Z0-9]+:/{flag=0} flag" "$STORAGE_CFG")
+  echo "$config_block" | grep "^\s*${param_name}" | awk '{print $2}' | head -1
+}
+
+list_synology_storages() {
+  [[ -f "$STORAGE_CFG" ]] || return 0
+  grep '^synology:' "$STORAGE_CFG" 2>/dev/null | awk '{print $2}' || true
+}
+
+run_health_check() {
+  local storage_name=$1
+  local warnings=0 errors=0 passed=0 total=0
+
+  check_line() {
+    local name=$1 status=$2 message=$3
+    printf '%-28s ' "${name}:"
+    case "$status" in
+      OK) echo "OK  $message"; passed=$((passed + 1)); total=$((total + 1)) ;;
+      WARN) echo "WARN $message"; warnings=$((warnings + 1)); total=$((total + 1)) ;;
+      FAIL) echo "FAIL $message"; errors=$((errors + 1)); total=$((total + 1)) ;;
+      SKIP) echo "SKIP $message" ;;
+    esac
+  }
+
+  echo
+  info "Health check for synology storage: $storage_name"
+  echo
+
+  if [[ -f "$SYNOLOGY_PLUGIN_PM" ]]; then
+    check_line "Plugin file" OK "installed v$(get_installed_version "$SYNOLOGY_PLUGIN_PM")"
+  else
+    check_line "Plugin file" FAIL "not installed at $SYNOLOGY_PLUGIN_PM"
+  fi
+
+  if grep -q "^synology: ${storage_name}\$" "$STORAGE_CFG" 2>/dev/null; then
+    check_line "Storage config" OK "found in storage.cfg"
+  else
+    check_line "Storage config" FAIL "not configured"
+    echo
+    info "Health check aborted: storage '$storage_name' not in $STORAGE_CFG"
+    return 2
+  fi
+
+  if command -v pvesm >/dev/null 2>&1 && pvesm status 2>/dev/null | grep -q "$storage_name.*active"; then
+    check_line "pvesm status" OK "active"
+  elif command -v pvesm >/dev/null 2>&1; then
+    check_line "pvesm status" WARN "inactive or not listed"
+  else
+    check_line "pvesm status" SKIP "pvesm not available"
+  fi
+
+  local address dsm_port use_https target_name
+  address=$(get_storage_config_value "$storage_name" "address")
+  dsm_port=$(get_storage_config_value "$storage_name" "dsm_port")
+  use_https=$(get_storage_config_value "$storage_name" "use_https")
+  target_name=$(get_storage_config_value "$storage_name" "target_name")
+
+  if [[ -z "$dsm_port" ]]; then
+    if [[ "${use_https:-yes}" == "no" ]]; then
+      dsm_port=5000
+    else
+      dsm_port=5001
+    fi
+  fi
+
+  if [[ -n "$address" ]]; then
+    if timeout 5 bash -c ">/dev/tcp/${address}/${dsm_port}" 2>/dev/null; then
+      check_line "DSM API port" OK "reachable ${address}:${dsm_port}"
+    else
+      check_line "DSM API port" FAIL "cannot reach ${address}:${dsm_port}"
+    fi
+  else
+    check_line "DSM API port" FAIL "address not configured"
+  fi
+
+  if [[ -n "$target_name" ]]; then
+    check_line "iSCSI target" OK "$target_name"
+  else
+    check_line "iSCSI target" FAIL "target_name not configured"
+  fi
+
+  local portal iscsi_port
+  iscsi_port=$(get_storage_config_value "$storage_name" "iscsi_port")
+  iscsi_port=${iscsi_port:-3260}
+  portal=$(get_storage_config_value "$storage_name" "iscsi_discovery_ips")
+  if [[ -z "$portal" && -n "$address" ]]; then
+    portal="${address}:${iscsi_port}"
+  fi
+  if [[ -n "$portal" ]]; then
+    portal=${portal%%,*}
+    local phost pport
+    if [[ "$portal" =~ ^([^:]+):([0-9]+)$ ]]; then
+      phost="${BASH_REMATCH[1]}"
+      pport="${BASH_REMATCH[2]}"
+      if timeout 5 bash -c ">/dev/tcp/${phost}/${pport}" 2>/dev/null; then
+        check_line "iSCSI portal" OK "reachable $portal"
+      else
+        check_line "iSCSI portal" WARN "cannot reach $portal (firewall or service down?)"
+      fi
+    else
+      check_line "iSCSI portal" WARN "invalid portal format: $portal"
+    fi
+  else
+    check_line "iSCSI portal" WARN "not configured"
+  fi
+
+  if command -v iscsiadm >/dev/null 2>&1 || [[ -x /sbin/iscsiadm ]]; then
+    local adm
+    adm=$(command -v iscsiadm 2>/dev/null || echo /sbin/iscsiadm)
+    if "$adm" -m session 2>/dev/null | grep -q .; then
+      check_line "iSCSI sessions" OK "$("$adm" -m session 2>/dev/null | wc -l | tr -d ' ') session(s)"
+    else
+      check_line "iSCSI sessions" WARN "no active sessions on this node"
+    fi
+  else
+    check_line "iSCSI sessions" SKIP "iscsiadm not found"
+  fi
+
+  if synology_plugin_registered; then
+    check_line "Plugin registered" OK "storage type synology"
+  else
+    check_line "Plugin registered" FAIL "pvesm does not list synology"
+  fi
+
+  echo
+  info "Summary: $passed passed, $warnings warning(s), $errors error(s) ($total checks)"
+  [[ $errors -eq 0 ]]
+}
+
+prompt_health_check_storage() {
+  command -v pvesm >/dev/null 2>&1 || die "pvesm not found - run on a Proxmox VE node"
+  mapfile -t storages < <(list_synology_storages)
+  if ((${#storages[@]} == 0)); then
+    die "no synology storage entries in $STORAGE_CFG"
+  fi
+  local storage_name
+  if ((${#storages[@]} == 1)); then
+    storage_name="${storages[0]}"
+    info "Using storage: $storage_name"
+  else
+    local i=1
+    for s in "${storages[@]}"; do
+      echo "  $i) $s"
+      i=$((i + 1))
+    done
+    read_tty -p "Select storage [1-${#storages[@]}]: " REPLY
+    local idx
+    idx=$(trim "${REPLY:-}")
+    [[ "$idx" =~ ^[0-9]+$ ]] || die "invalid selection"
+    ((idx >= 1 && idx <= ${#storages[@]})) || die "invalid selection"
+    storage_name="${storages[$((idx - 1))]}"
+  fi
+  run_health_check "$storage_name"
+}
+
 install_plugin() {
   local plugin_url=$1
   local dest=$2
@@ -136,9 +332,11 @@ install_plugin() {
     if [[ -n "${DRY_RUN:-}" ]]; then
       info "DRY_RUN is set - would install ${local_candidate} to ${dest}"
     else
+      validate_plugin "$local_candidate"
+      backup_plugin "$dest"
       install -d -m 0755 "$(dirname "$dest")"
       install -m 0644 "$local_candidate" "$dest"
-      info "Installed $dest"
+      info "Installed $dest (v$(get_installed_version "$dest"))"
     fi
   else
     local tmp
@@ -152,9 +350,11 @@ install_plugin() {
     if [[ -n "${DRY_RUN:-}" ]]; then
       info "DRY_RUN is set - would install to ${dest}"
     else
+      validate_plugin "$tmp"
+      backup_plugin "$dest"
       install -d -m 0755 "$(dirname "$dest")"
       install -m 0644 "$tmp" "$dest"
-      info "Installed $dest"
+      info "Installed $dest (v$(get_installed_version "$dest"))"
     fi
   fi
 
@@ -217,10 +417,11 @@ show_main_menu() {
     echo "3) Install plugin + configure storage"
     echo "4) Reinstall plugin from remote URL"
     echo "5) Show install/storage status"
-    echo "6) Uninstall plugin"
-    echo "7) Exit"
+    echo "6) Run health check on configured Synology storage"
+    echo "7) Uninstall plugin"
+    echo "8) Exit"
     echo
-    read_tty -p "Select an option [1-7]: " REPLY
+    read_tty -p "Select an option [1-8]: " REPLY
     local choice
     choice=$(trim "${REPLY:-}")
 
@@ -250,12 +451,16 @@ show_main_menu() {
         pause_prompt
         ;;
       6)
+        prompt_health_check_storage || true
+        pause_prompt
+        ;;
+      7)
         if prompt_yesno "Remove plugin file from ${dest}?" n; then
           uninstall_plugin "$dest"
         fi
         pause_prompt
         ;;
-      7)
+      8)
         info "Exiting."
         break
         ;;

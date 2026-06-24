@@ -19,11 +19,16 @@ use JSON::XS qw( decode_json encode_json );
 use LWP::UserAgent ();
 use HTTP::Request  ();
 use URI::Escape qw( uri_escape uri_escape_utf8 );
-use Time::HiRes qw( sleep );
+use Time::HiRes qw( sleep usleep );
+use IO::Socket::INET ();
 
 use base qw(PVE::Storage::Plugin);
 
 push @PVE::Storage::Plugin::SHARED_STORAGE, 'synology';
+
+our $VERSION         = '1.0.6';
+our $TESTED_APIVER   = 15;
+our $DEFAULT_LOCK_TIMEOUT = 120;
 
 my $DEBUG = $ENV{ SYNOLOGY_DEBUG } // 0;
 
@@ -42,20 +47,18 @@ sub set_debug_from_config {
   }
 }
 
-### PVE API version (match Nimble plugin pattern)
+### PVE API version (TrueNAS plugin pattern: adapt to host, cap at tested)
 sub api {
-  my $tested_apiver = 15;
-  my $apiver        = eval { PVE::Storage::APIVER() };
-  my $apiage        = eval { PVE::Storage::APIAGE() };
-  $apiver = $tested_apiver if !defined($apiver) || $apiver !~ /^\d+$/;
-  $apiage = 0              if !defined($apiage) || $apiage !~ /^\d+$/;
-  if ( $apiver >= 2 && $apiver <= $tested_apiver ) {
-    return $apiver;
+  my $tested_apiver   = $TESTED_APIVER;
+  my $system_apiver   = eval { require PVE::Storage; PVE::Storage::APIVER() } // 11;
+  my $system_apiage   = eval { PVE::Storage::APIAGE() } // 2;
+  if ( $system_apiver >= 11 && $system_apiver <= $tested_apiver ) {
+    return $system_apiver;
   }
-  if ( $apiver - $apiage < $tested_apiver ) {
+  if ( $system_apiver - $system_apiage < $tested_apiver ) {
     return $tested_apiver;
   }
-  return 10;
+  return 11;
 }
 
 sub type {
@@ -143,6 +146,46 @@ sub properties {
       maximum     => 3,
       default     => 0,
     },
+    use_multipath => {
+      description => 'After iSCSI login, reload multipath maps (default yes).',
+      type        => 'boolean',
+      default     => 'yes',
+    },
+    chap_user => {
+      description => 'Optional iSCSI CHAP username for target login.',
+      type        => 'string',
+      optional    => 1,
+    },
+    chap_password => {
+      description => 'Optional iSCSI CHAP password.',
+      type        => 'string',
+      optional    => 1,
+    },
+    api_retry_max => {
+      description => 'Maximum DSM API retries on transient failures.',
+      type        => 'integer',
+      default     => 3,
+      minimum     => 0,
+      maximum     => 10,
+    },
+    api_retry_delay => {
+      description => 'Initial API retry delay in seconds (exponential backoff).',
+      type        => 'number',
+      default     => 1,
+    },
+    device_ready_retries => {
+      description => 'Reserved for device discovery tuning after iSCSI login (default 200).',
+      type        => 'integer',
+      default     => 200,
+      optional    => 1,
+    },
+    storage_lock_timeout => {
+      description => 'Cluster lock timeout in seconds for storage operations (default 120).',
+      type        => 'integer',
+      default     => 120,
+      minimum     => 10,
+      maximum     => 600,
+    },
     storeid => {
       description => 'Proxmox storage ID (auto-set; do not change manually).',
       type        => 'string',
@@ -169,11 +212,19 @@ sub options {
     dsm_session            => { optional => 1 },
     max_iscsi_sessions     => { optional => 1 },
     synology_debug         => { optional => 1 },
+    use_multipath          => { optional => 1 },
+    chap_user              => { optional => 1 },
+    chap_password          => { optional => 1 },
+    api_retry_max          => { optional => 1 },
+    api_retry_delay        => { optional => 1 },
+    device_ready_retries   => { optional => 1 },
+    storage_lock_timeout   => { optional => 1 },
     storeid                => { optional => 1 },
     nodes                  => { optional => 1 },
     disable                => { optional => 1 },
     content                => { optional => 1 },
     format                 => { optional => 1 },
+    shared                 => { optional => 1 },
   };
 }
 
@@ -188,6 +239,33 @@ sub check_config {
       delete $opts->{ password };
     }
   }
+
+  # Block storage is always shared (TrueNAS plugin pattern).
+  $opts->{ shared } = 1 if ref($opts) eq 'HASH';
+
+  if ( ref($opts) eq 'HASH' && defined $opts->{ api_retry_max } ) {
+    die "api_retry_max must be between 0 and 10 (got $opts->{api_retry_max})\n"
+      if $opts->{ api_retry_max } < 0 || $opts->{ api_retry_max } > 10;
+  }
+  if ( ref($opts) eq 'HASH' && defined $opts->{ api_retry_delay } ) {
+    die "api_retry_delay must be between 0.1 and 60 seconds (got $opts->{api_retry_delay})\n"
+      if $opts->{ api_retry_delay } < 0.1 || $opts->{ api_retry_delay } > 60;
+  }
+  if ( ref($opts) eq 'HASH' && defined $opts->{ storage_lock_timeout } ) {
+    die "storage_lock_timeout must be between 10 and 600 seconds (got $opts->{storage_lock_timeout})\n"
+      if $opts->{ storage_lock_timeout } < 10 || $opts->{ storage_lock_timeout } > 600;
+  }
+  if ( ref($opts) eq 'HASH' && defined $opts->{ device_ready_retries } ) {
+    die "device_ready_retries must be between 10 and 1000 (got $opts->{device_ready_retries})\n"
+      if $opts->{ device_ready_retries } < 10 || $opts->{ device_ready_retries } > 1000;
+  }
+
+  if ($create && ref($opts) eq 'HASH') {
+    die "address is required\n"       if !$opts->{ address };
+    die "target_name is required\n"   if !$opts->{ target_name };
+    die "lun_location is required\n"  if !$opts->{ lun_location };
+  }
+
   return $opts;
 }
 
@@ -507,6 +585,54 @@ sub synology_api_info_max_version {
 }
 
 # $params: list of key/value for query string (values already escaped where needed)
+sub synology_is_retryable_error {
+  my ($error) = @_;
+  return 0 if !defined $error;
+  return 1 if $error =~ /timeout|timed out/i;
+  return 1 if $error =~ /connection refused|connection reset|broken pipe/i;
+  return 1 if $error =~ /network is unreachable|host is unreachable/i;
+  return 1 if $error =~ /temporary failure|service unavailable/i;
+  return 1 if $error =~ /502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i;
+  return 1 if $error =~ /rate limit/i;
+  return 1 if $error =~ /ssl.*error/i;
+  return 1 if $error =~ /connection.*failed/i;
+  return 0 if $error =~ /401 Unauthorized|403 Forbidden|404 Not Found/i;
+  return 0 if $error =~ /invalid.*key|authentication.*failed/i;
+  return 0 if $error =~ /validation.*error|invalid.*parameter/i;
+  return 0;
+}
+
+sub synology_retry_with_backoff {
+  my ( $scfg, $operation_name, $code_ref ) = @_;
+  my $max_retries   = $scfg->{ api_retry_max } // 3;
+  my $initial_delay = $scfg->{ api_retry_delay } // 1;
+  my $attempt       = 0;
+  my $last_error;
+  my $result;
+
+  while ( $attempt <= $max_retries ) {
+    $result = eval { return $code_ref->(); };
+    $last_error = $@;
+    return $result if !$last_error;
+
+    $attempt++;
+    if ( !synology_is_retryable_error($last_error) ) {
+      die $last_error;
+    }
+    if ( $attempt > $max_retries ) {
+      die "Operation failed after $max_retries retries: $last_error\n";
+    }
+
+    my $delay = $initial_delay * ( 2**( $attempt - 1 ) );
+    $delay += $delay * 0.2 * rand();
+    warn "Warning :: Synology API retry $attempt/$max_retries for $operation_name after ${delay}s: $last_error\n"
+      if get_debug_level($scfg) >= 1;
+    sleep($delay);
+  }
+
+  die $last_error if $last_error;
+}
+
 sub synology_entry_request {
   my ( $scfg, $storeid, $params_ref, $retry ) = @_;
   $retry //= 1;
@@ -524,8 +650,16 @@ sub synology_entry_request {
   my $ua  = synology_lwp_agent($scfg);
   my $req = HTTP::Request->new( GET => $uri );
   $req->header( 'Cookie' => "id=$sid" );
-  my $res = $ua->request($req);
-  die "Error :: Synology API HTTP " . $res->code . "\n" unless $res->is_success;
+
+  my $res = synology_retry_with_backoff(
+    $scfg,
+    'DSM HTTP',
+    sub {
+      my $response = $ua->request($req);
+      die "Error :: Synology API HTTP " . $response->code . "\n" unless $response->is_success;
+      return $response;
+    },
+  );
   my $body = $res->decoded_content // '';
   my $data = eval { decode_json($body) };
   die "Error :: Synology API: invalid JSON ($body)\n" if $@ || ref($data) ne 'HASH';
@@ -1081,6 +1215,95 @@ sub synology_iscsiadm_path {
   return -x '/usr/bin/iscsiadm' ? '/usr/bin/iscsiadm' : '/sbin/iscsiadm';
 }
 
+sub synology_normalize_portal {
+  my ($p) = @_;
+  $p //= '';
+  $p =~ s/^\s+|\s+$//g;
+  return '' if $p eq '';
+  $p = ( $p =~ /^\[(.+)\]:(\d+)$/ ) ? "$1:$2" : $p;
+  $p =~ s/,\d+$//;
+  return $p;
+}
+
+sub synology_probe_portal {
+  my ($portal) = @_;
+  my ( $h, $port ) = $portal =~ /^(.+):(\d+)$/;
+  return 1 if !$h || !$port;
+  my $sock = IO::Socket::INET->new(
+    PeerHost => $h,
+    PeerPort => $port,
+    Proto    => 'tcp',
+    Timeout  => 5,
+  );
+  die "Error :: iSCSI portal $portal is not reachable (TCP connect failed)\n" if !$sock;
+  close $sock;
+  return 1;
+}
+
+sub synology_try_run {
+  my ( $cmd, $errmsg ) = @_;
+  my $ok = 1;
+  eval {
+    run_command(
+      $cmd,
+      errmsg  => $errmsg // 'command failed',
+      outfunc => sub { },
+      errfunc => sub { },
+      quiet   => 1,
+    );
+  };
+  if ($@) {
+    warn "Warning :: " . ( $errmsg // 'command failed' ) . ": $@\n";
+    $ok = 0;
+  }
+  return $ok;
+}
+
+sub synology_run_lines {
+  my ($cmd) = @_;
+  my @lines;
+  eval {
+    run_command(
+      $cmd,
+      outfunc => sub { push @lines, $_[0] if defined $_[0] && $_[0] =~ /\S/; },
+      errfunc => sub { },
+      quiet   => 1,
+    );
+  };
+  return @lines;
+}
+
+sub synology_use_multipath_enabled {
+  my ($scfg) = @_;
+  return 0 unless ref($scfg) eq 'HASH';
+  my $v = $scfg->{ use_multipath };
+  return 1 if !defined($v);
+  return 0 if "$v" eq '0' || "$v" eq 'no';
+  return 1;
+}
+
+sub synology_portal_connected {
+  my ( $iqn, $portal, $session_lines_ref ) = @_;
+  return 0 if !length($iqn) || !length($portal);
+  my @lines = defined $session_lines_ref ? @$session_lines_ref : synology_run_lines( [ synology_iscsiadm_path(), '-m', 'session' ] );
+  my $portal_re = quotemeta($portal);
+  for my $line (@lines) {
+    next unless $line =~ /\b\Q$iqn\E\b/;
+    return 1 if $line =~ /\b$portal_re\b/;
+  }
+  return 0;
+}
+
+sub synology_all_portals_connected {
+  my ( $scfg, $iqn, @portals ) = @_;
+  return 0 if !length($iqn) || !@portals;
+  my @session_lines = synology_run_lines( [ synology_iscsiadm_path(), '-m', 'session' ] );
+  for my $portal (@portals) {
+    return 0 if !synology_portal_connected( $iqn, $portal, \@session_lines );
+  }
+  return 1;
+}
+
 sub synology_iscsi_portal {
   my ( $host, $port ) = @_;
   $port //= 3260;
@@ -1138,11 +1361,89 @@ sub synology_target_iqn {
 }
 
 sub synology_iscsi_login_all {
-  my ($scfg) = @_;
+  my ( $class, $scfg, $storeid ) = @_;
   my $adm = synology_iscsiadm_path();
   return unless -x $adm;
-  eval { run_command( [ $adm, '-m', 'node', '--op', 'update', '-n', 'node.startup', '-v', 'automatic' ], timeout => 10, quiet => 1 ); };
-  eval { run_command( [ $adm, '-m', 'node', '--login' ], timeout => 120, quiet => 1 ); };
+
+  my $iqn = '';
+  eval { $iqn = $class->synology_target_iqn( $scfg, $storeid ); };
+  $iqn = synology_untaint_iscsi_scalar($iqn);
+
+  my @portals = map { synology_normalize_portal($_) } synology_discovery_portals($scfg);
+  @portals = grep { length $_ } @portals;
+  return unless @portals;
+
+  if ( length($iqn) && synology_all_portals_connected( $scfg, $iqn, @portals ) ) {
+    return;
+  }
+
+  for my $portal (@portals) {
+    eval { synology_probe_portal($portal); };
+    warn "Warning :: iSCSI portal probe failed for $portal: $@\n" if $@;
+  }
+
+  synology_sendtargets($scfg);
+
+  if ( !length($iqn) ) {
+    eval { run_command( [ $adm, '-m', 'node', '--op', 'update', '-n', 'node.startup', '-v', 'automatic' ], timeout => 10, quiet => 1 ); };
+    eval { run_command( [ $adm, '-m', 'node', '--login' ], timeout => 120, quiet => 1 ); };
+    if ( synology_use_multipath_enabled($scfg) ) {
+      eval { run_command( [ '/sbin/multipath', '-r' ], timeout => 60, quiet => 1 ); };
+    }
+    eval { run_command( [ '/bin/udevadm', 'settle', '--timeout=15' ], timeout => 20, quiet => 1 ); };
+    return;
+  }
+
+  my $primary = $portals[0];
+  my @extra   = @portals > 1 ? @portals[ 1 .. $#portals ] : ();
+  my @nodes   = synology_run_lines( [ $adm, '-m', 'node', '-T', $iqn ] );
+  my @session_lines = synology_run_lines( [ $adm, '-m', 'session' ] );
+
+  for my $n (@nodes) {
+    next unless $n =~ /^(\S+)\s+\Q$iqn\E$/;
+    my $portal = synology_normalize_portal($1);
+    synology_try_run(
+      [ $adm, '-m', 'node', '-T', $iqn, '-p', $portal, '-o', 'update', '-n', 'node.startup', '-v', 'automatic' ],
+      'iscsiadm node.startup update failed',
+    );
+    if ( $scfg->{ chap_user } && $scfg->{ chap_password } ) {
+      for my $cmd (
+        [ $adm, '-m', 'node', '-T', $iqn, '-p', $portal, '-o', 'update', '-n', 'node.session.auth.authmethod', '-v', 'CHAP' ],
+        [ $adm, '-m', 'node', '-T', $iqn, '-p', $portal, '-o', 'update', '-n', 'node.session.auth.username', '-v', $scfg->{ chap_user } ],
+        [ $adm, '-m', 'node', '-T', $iqn, '-p', $portal, '-o', 'update', '-n', 'node.session.auth.password', '-v', $scfg->{ chap_password } ],
+      ) {
+        synology_try_run( $cmd, 'iscsiadm CHAP update failed' );
+      }
+    }
+    next if synology_portal_connected( $iqn, $portal, \@session_lines );
+    synology_try_run( [ $adm, '-m', 'node', '-T', $iqn, '-p', $portal, '--login' ], "iscsiadm login failed ($portal)" );
+  }
+
+  for my $p (@extra) {
+    next if synology_portal_connected( $iqn, $p, \@session_lines );
+    synology_try_run( [ $adm, '-m', 'node', '-T', $iqn, '-p', $p, '--login' ], "iscsiadm login failed ($p)" );
+  }
+
+  my $have_session = 0;
+  for my $line ( synology_run_lines( [ $adm, '-m', 'session' ] ) ) {
+    if ( $line =~ /\b\Q$iqn\E\b/ ) {
+      $have_session = 1;
+      last;
+    }
+  }
+  if ( !$have_session ) {
+    synology_sendtargets($scfg);
+    for my $p ( @extra, $primary ) {
+      synology_try_run( [ $adm, '-m', 'node', '-T', $iqn, '-p', $p, '--login' ], "iSCSI login retry ($p)" );
+    }
+  }
+
+  eval { run_command( [ $adm, '-m', 'session', '--rescan' ], timeout => 90, quiet => 1 ); };
+  if ( synology_use_multipath_enabled($scfg) ) {
+    eval { run_command( [ '/sbin/multipath', '-r' ], timeout => 60, quiet => 1 ); };
+  }
+  eval { run_command( [ '/bin/udevadm', 'settle', '--timeout=15' ], timeout => 20, quiet => 1 ); };
+  usleep(250_000);
 }
 
 sub synology_snapshot_dsm_name {
@@ -1391,7 +1692,7 @@ sub activate_storage {
       # list): it is redundant for activation and can fail with iSCSI API errors (e.g. 18990xxx)
       # for some accounts or DSM builds while sendtargets/login still works.
       synology_sendtargets($scfg);
-      synology_iscsi_login_all($scfg);
+      synology_iscsi_login_all( $class, $scfg, $storeid );
       1;
     } or warn "Warning :: Synology auto iSCSI for \"$storeid\": $@\n";
   }
@@ -1613,8 +1914,10 @@ sub volume_resize {
   die "Error :: volume_resize: \"$volname\" not found.\n" unless $lun;
   my $uuid = $lun->{ uuid } // '';
   die "Error :: volume_resize: no uuid.\n" if $uuid eq '';
+  my $cur = 0 + ( $lun->{ size } // 0 );
   # PVE::Storage::volume_resize passes $size in bytes (KiB-aligned), not KiB like alloc_image.
   $size = 1024 if $size < 1024;
+  die "Error :: shrink not supported (current=$cur requested=$size).\n" if $size <= $cur;
   synology_entry_request(
     $scfg, $storeid,
     [
@@ -1625,6 +1928,14 @@ sub volume_resize {
       new_size => "$size",
     ],
   );
+  my $adm = synology_iscsiadm_path();
+  if ( -x $adm ) {
+    eval { run_command( [ $adm, '-m', 'session', '--rescan' ], timeout => 90, quiet => 1 ); };
+  }
+  if ( synology_use_multipath_enabled($scfg) ) {
+    eval { run_command( [ '/sbin/multipath', '-r' ], timeout => 60, quiet => 1 ); };
+  }
+  eval { run_command( [ '/bin/udevadm', 'settle', '--timeout=15' ], timeout => 20, quiet => 1 ); };
   return 1;
 }
 
@@ -1841,6 +2152,13 @@ sub clone_image {
   return $name;
 }
 
+sub copy_image {
+  my ( $class, $scfg, $storeid, $volname, $vmid, $snapname, $name, $format ) = @_;
+  die "Error :: copy requires a snapshot.\n" unless $snapname;
+  die "Error :: only raw format is supported.\n" if defined($format) && $format ne 'raw';
+  return $class->clone_image( $scfg, $storeid, $volname, $vmid, $snapname );
+}
+
 sub volume_has_feature {
   my ( $class, $scfg, $feature, $storeid, $volname, $snapname, $running ) = @_;
   my $lt = $scfg->{ lun_type } // 'ADV';
@@ -1969,6 +2287,15 @@ sub volume_export {
     die $err;
   }
   return 1;
+}
+
+sub cluster_lock_storage {
+  my ( $class, $storeid, $shared, $timeout, $func, @param ) = @_;
+  my $cfg = PVE::Storage::config();
+  my $scfg = PVE::Storage::storage_config( $cfg, $storeid, 1 );
+  my $lock_timeout = $scfg->{ storage_lock_timeout } // $DEFAULT_LOCK_TIMEOUT;
+  $timeout = $lock_timeout if !defined($timeout) || $timeout < $lock_timeout;
+  return $class->SUPER::cluster_lock_storage( $storeid, $shared, $timeout, $func, @param );
 }
 
 1;
